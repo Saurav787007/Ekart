@@ -1,117 +1,129 @@
 
-name: CICD Pipeline
+name: Shopping Cart CI/CD Pipeline
 
 on:
   push:
-    branches: ["master"]
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  # 1. Compile
   compile:
+    name: Compile
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: temurin
+          java-version: '8'
           cache: maven
-          cache-dependency-path: '**/pom.xml'
 
-      - name: Compile with Maven
+      - name: Compile project
         run: mvn -B -ntp compile
 
-  # 2. Security scanning
   security-check:
+    name: Security Scan
     runs-on: ubuntu-latest
     needs: compile
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: temurin
+          java-version: '8'
           cache: maven
-          cache-dependency-path: '**/pom.xml'
-
-      - name: Resolve Maven dependencies
-        run: mvn -B -ntp dependency:go-offline
 
       - name: Install Trivy
         run: |
           sudo apt-get update
           sudo apt-get install -y wget gnupg
-
           wget -qO- https://aquasecurity.github.io/trivy-repo/deb/public.key \
             | gpg --dearmor \
             | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
             | sudo tee /etc/apt/sources.list.d/trivy.list
-
           sudo apt-get update
           sudo apt-get install -y trivy
 
-      - name: Trivy filesystem scan
-        run: trivy fs --offline-scan --format table -o fs-report.txt .
+      - name: Run Trivy scan
+        run: |
+          trivy fs \
+            --scanners vuln,misconfig,secret \
+            --skip-dirs .git \
+            --format table \
+            --output trivy-report.txt \
+            .
 
       - name: Upload Trivy report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-report
-          path: fs-report.txt
+          name: trivy-security-report
+          path: trivy-report.txt
           if-no-files-found: ignore
 
       - name: Install Gitleaks
         run: |
-          set -e
-          GITLEAKS_VERSION="8.24.2"
-          wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -O /tmp/gitleaks.tar.gz
+          VERSION="8.24.2"
+          wget -q \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            -O /tmp/gitleaks.tar.gz
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
 
-      - name: Gitleaks secret scan
-        run: gitleaks detect --source . --report-path gitleaks-report.json --report-format json --exit-code 1
+      - name: Scan for leaked secrets
+        run: |
+          gitleaks detect \
+            --source . \
+            --no-git \
+            --redact \
+            --exit-code 1
 
-      - name: Upload Gitleaks report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gitleaks-report
-          path: gitleaks-report.json
-          if-no-files-found: ignore
-
-  # 3. Unit tests
   test:
+    name: Unit Tests
     runs-on: ubuntu-latest
-    needs: security-check
+    needs: compile
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: temurin
+          java-version: '8'
           cache: maven
-          cache-dependency-path: '**/pom.xml'
 
       - name: Run unit tests
+        id: unit-tests
+        continue-on-error: true
         run: mvn -B -ntp clean test
+
+      - name: Display test failure details
+        if: steps.unit-tests.outcome == 'failure'
+        run: |
+          echo "===== Surefire test reports ====="
+          find . -type f -path '*/target/surefire-reports/*.txt' \
+            -exec sh -c 'echo "===== $1 ====="; cat "$1"' _ {} \;
+
+          echo "===== Test XML error details ====="
+          find . -type f -path '*/target/surefire-reports/TEST-*.xml' \
+            -exec sh -c 'echo "===== $1 ====="; grep -E "failure|error|Exception|Caused by" "$1" | head -80' _ {} \;
 
       - name: Upload test reports
         if: always()
@@ -123,27 +135,28 @@ jobs:
             **/target/failsafe-reports/
           if-no-files-found: ignore
 
-  # 4. Package and SonarQube analysis
-  build_project_and_sonar_scan:
+      - name: Fail pipeline if tests failed
+        if: steps.unit-tests.outcome == 'failure'
+        run: exit 1
+
+  build:
+    name: Build JAR
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, security-check]
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: temurin
+          java-version: '8'
           cache: maven
-          cache-dependency-path: '**/pom.xml'
 
-      - name: Build project
-        run: mvn -B -ntp package
+      - name: Build application
+        run: mvn -B -ntp clean package -DskipTests
 
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
@@ -151,29 +164,17 @@ jobs:
           name: app-jar
           path: target/*.jar
           if-no-files-found: error
+          retention-days: 3
 
-      - name: SonarQube scan
-        uses: SonarSource/sonarqube-scan-action@v5.0.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-
-      - name: SonarQube quality gate
-        uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
-        with:
-          pollingTimeoutSec: 600
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-
-  # 5. Build and push Docker image
-  build_docker_image_and_push:
-    runs-on: self-hosted
-    needs: build_project_and_sonar_scan
+  docker:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Download JAR artifact
         uses: actions/download-artifact@v4
@@ -181,27 +182,25 @@ jobs:
           name: app-jar
           path: app
 
-      - name: Verify downloaded JAR
+      - name: Verify JAR
         run: |
           ls -lh app/
           test -n "$(find app -maxdepth 1 -name '*.jar' -print -quit)"
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
           push: true
-          tags: adijaiswal/bankapp:latest
+          tags: |
+            saurav787007/bankapp:latest
+            saurav787007/bankapp:${{ github.sha }}

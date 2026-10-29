@@ -117,11 +117,11 @@ jobs:
       - name: Display test failure details
         if: steps.unit-tests.outcome == 'failure'
         run: |
-          echo "===== Surefire test reports ====="
+          echo "===== Surefire reports ====="
           find . -type f -path '*/target/surefire-reports/*.txt' \
             -exec sh -c 'echo "===== $1 ====="; cat "$1"' _ {} \;
 
-          echo "===== Test XML error details ====="
+          echo "===== Test XML errors ====="
           find . -type f -path '*/target/surefire-reports/TEST-*.xml' \
             -exec sh -c 'echo "===== $1 ====="; grep -E "failure|error|Exception|Caused by" "$1" | head -80' _ {} \;
 
@@ -155,14 +155,19 @@ jobs:
           java-version: '8'
           cache: maven
 
-      - name: Build application
+      - name: Package application
         run: mvn -B -ntp clean package -DskipTests
+
+      - name: Verify JAR
+        run: |
+          ls -lh target/
+          test -f target/shopping-cart-0.0.1-SNAPSHOT.jar
 
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-jar
-          path: target/*.jar
+          path: target/shopping-cart-0.0.1-SNAPSHOT.jar
           if-no-files-found: error
           retention-days: 3
 
@@ -176,16 +181,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download JAR artifact
+      - name: Download JAR into target
         uses: actions/download-artifact@v4
         with:
           name: app-jar
-          path: app
+          path: target
 
-      - name: Verify JAR
+      - name: Verify Docker build files
         run: |
-          ls -lh app/
-          test -n "$(find app -maxdepth 1 -name '*.jar' -print -quit)"
+          test -f docker/Dockerfile
+          test -f target/shopping-cart-0.0.1-SNAPSHOT.jar
+          echo "Dockerfile and JAR are ready."
+          ls -lh target/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -200,6 +207,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./docker/Dockerfile
           push: true
           tags: |
             saurav787007/bankapp:latest

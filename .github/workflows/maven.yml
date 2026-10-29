@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  # 1. Compile the application
+  # 1. Compile
   compile:
     runs-on: ubuntu-latest
 
@@ -111,7 +111,7 @@ jobs:
           cache-dependency-path: '**/pom.xml'
 
       - name: Run unit tests
-        run: mvn -B -ntp test
+        run: mvn -B -ntp clean test
 
       - name: Upload test reports
         if: always()
@@ -123,7 +123,7 @@ jobs:
             **/target/failsafe-reports/
           if-no-files-found: ignore
 
-  # 4. Package application and run SonarQube analysis
+  # 4. Package and SonarQube analysis
   build_project_and_sonar_scan:
     runs-on: ubuntu-latest
     needs: test
@@ -159,7 +159,6 @@ jobs:
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
 
       - name: SonarQube quality gate
-        id: sonarqube-quality-gate-check
         uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
         with:
           pollingTimeoutSec: 600
